@@ -1,0 +1,89 @@
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "8888:8888"
+      - "5000:3000"
+      - "8080:8080"
+      - "8089:6379"
+      - "8088:5432"
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - VPN_TYPE=${VPN_TYPE}
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - SERVER_CITIES=Vancouver,Seattle
+    volumes:
+      - ./gluetun:/gluetun
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- https://ipinfo.io/ip || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  aiostreams:
+    image: ghcr.io/viren070/aiostreams:latest
+    network_mode: service:gluetun
+    container_name: aiostreams
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      gluetun:
+        condition: service_healthy
+      stremthru:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/v1/status || exit 1"]
+      interval: 60s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  stremthru:
+    container_name: stremthru
+    network_mode: service:gluetun
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    image: muniftanjim/stremthru
+    env_file:
+      - .env
+    volumes:
+      - ./stremthru/data:/app/data
+    restart: unless-stopped
+    depends_on:
+      gluetun:
+        condition: service_healthy
+
+  postgres:
+    network_mode: service:gluetun
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_DB: stremthru
+      POSTGRES_USER: stremthru
+      POSTGRES_PASSWORD: stremthru
+    restart: always
+    volumes:
+      - ./stremthru/data/postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    network_mode: service:gluetun
+
+  tunnel:
+    container_name: cloudflared-tunnel
+    network_mode: service:gluetun
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
